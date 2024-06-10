@@ -1,0 +1,48 @@
+// Magnetometer slave device
+
+#include <Wire.h>
+
+// Define the mathematical constant PI
+#define PI 3.14159
+
+// Pin connected to the potentiometer
+#define potPin A0
+
+// Constants for magnetometer calibration - adjust as needed
+#define X_OFFSET 300  // X-axis offset
+#define Y_OFFSET 200  // Y-axis offset
+#define X_SENS 1000   // X-axis sensitivity
+#define Y_SENS 1000   // Y-axis sensitivity
+#define NOISE 50      // Noise threshold
+
+// Variables
+int potentiometer = 0;  // Potentiometer reading
+int heading = 0;        // Calculated heading value
+
+void setup() {
+  Serial.begin(9600);   // Initialize serial communication for debugging
+  Wire.begin(30);        // Set magnetometer address as 30
+  Wire.onRequest(transmitValues);  // Register the function to handle I2C requests
+}
+
+void loop() {
+  // Read potentiometer value
+  potentiometer = analogRead(potPin);
+
+  // Convert potentiometer reading to heading in the range 0 to 360 degrees
+  heading = map(potentiometer, 0, 1023, 0, 360);
+
+  delay(100);  // Introduce a delay for stability
+}
+
+// Function to handle I2C request for transmitting values
+void transmitValues() {
+  // Read potentiometer value
+  potentiometer = analogRead(potPin);
+
+  // Map potentiometer value to heading in the range 0 to 360 degrees
+  heading = map(potentiometer, 0, 1023, 0, 360);
+
+  // Transmit heading value over I2C
+  Wire.write(heading);
+}
