@@ -1,0 +1,401 @@
+//Master Arduino Code
+
+//red = power, 
+//black = ground, 
+//grey = analog 
+//blue and red = L293D input
+//green = echo 
+//orange = trigger.
+
+#include <Wire.h>
+
+// Flag to indicate emergency stop
+bool emergencyStopFlag = false;
+
+// I2C slave address
+const int slaveAddr = 30;
+
+// Magnetometer readings
+long X_Mag = 0;
+long Y_Mag = 0;
+
+// Magnetometer offset values
+#define X_OFFSET 300
+#define Y_OFFSET 200
+
+// Last duration change time and value for the right ultrasound
+unsigned long lastDurChangeTimeR = 0;
+int lastDurR = 0;
+
+// Ultrasonic detector pins
+#define echoPinR 4
+#define trigPinR 5
+#define echoPinF 6
+#define trigPinF 7
+#define echoPinL 12
+#define trigPinL 13
+
+// Motor pins
+#define motorPinLA 8
+#define motorPinLB 9
+#define motorPinRA 10
+#define motorPinRB 11
+
+// LED pin
+#define ledPin 3
+
+// Physical inputs, including interrupt input
+#define buttonPin 2
+
+// Variable environmental inputs
+int inputPinT = A3;
+int inputPinL = A4;
+int inputPinP = A5;
+
+// Initial values for sensors
+int readingT = 0;
+int readingL = 0;
+int readingP = 0;
+
+// Tangible values for sensors
+int heading;
+
+// Ultrasonic detector values
+int durR;
+int durF;
+int durL;
+
+// Constant values
+const int delayPeriodSS = 300;
+const int delayPeriodSL = 700;
+const int delayPeriodEcho = 200;
+const int durBoundaryS = 7000;
+const int durBoundaryL = 10000;
+const int emStop = 0;
+
+// Motor speed variables
+int recSpeedL;
+int recSpeedR;
+int reqSpeedL;
+int reqSpeedR;
+
+// String values
+char inputString[2]; // to store the input string
+
+// String values
+int strUL; // Ultrasound Left
+int strUF; // Ultrasound Front
+int strUR; // Ultrasound Right
+int strBG; // Bearing/Heading
+int strBC = 65; // Bumper Contact Default Value
+
+// Boolean
+boolean ledPinLight = false;
+
+// Function to map magnetometer reading to the range 0-360
+int mapMagReading(int rawValue) {
+  return map(rawValue, 0, 1023, 0, 360);
+}
+
+void handleInterrupt() {
+  // Add your interrupt handling code here
+}
+
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+  Serial.println("Setup, please wait....");
+
+  pinMode(buttonPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(buttonPin), handleInterrupt, HIGH);
+
+  pinSetup();
+
+  initialMotor();
+
+  Serial.println("Setup Complete.");
+  Serial.println("System Ready");
+}
+
+void loop() {
+  // Read two ASCII characters from Serial Monitor
+  if (Serial.available() >= 2) {
+    inputString[0] = Serial.read();
+    inputString[1] = Serial.read();
+
+    // Convert ASCII characters to decimal values
+    recSpeedL = inputString[0] - '0';
+    recSpeedR = inputString[1] - '0';
+
+    // Print received speeds for debugging
+    Serial.print("Received Left Speed: ");
+    Serial.print(recSpeedL);
+    Serial.print(", Right Speed: ");
+    Serial.println(recSpeedR);
+
+    // Debugging prints to check the ASCII values received
+    Serial.print("ASCII Values: ");
+    Serial.print(inputString[0]);
+    Serial.print(", ");
+    Serial.println(inputString[1]);
+  }
+
+  // ... (existing code)
+
+  // Update motor speeds with the received values
+  reqSpeedL = recSpeedL;
+  reqSpeedR = recSpeedR;
+
+  // Request data from the slave Arduino
+  Wire.requestFrom(slaveAddr, 1); // Request 1 byte of data
+
+  // Check if data is available to read
+  if (Wire.available() >= 1) {
+    // Read heading value from the slave Arduino
+    int hdg = Wire.read();
+
+    // Process the heading value as needed
+    Serial.print("Heading: ");
+    Serial.println(hdg);
+    // Add your code to use heading as needed
+  }
+
+  delay(100);
+
+  // Check if the emergency stop button is pressed
+  handleEmergencyStop();
+
+  if (emergencyStopFlag) {
+    Serial.println("Exiting the loop due to emergency stop.");
+    return;
+  }
+
+  // Main chunk of code written as functions clearly show the flowchart
+  requestCompassReading(); // Request compass reading from slave
+  ultrasound();
+  stringMap();
+  asciiWrite();
+  leftMotorControl();
+  rightMotorControl();
+  
+  analogWrite(motorPinLA, reqSpeedL);
+  analogWrite(motorPinLB, reqSpeedL);
+  analogWrite(motorPinRA, reqSpeedR);
+  analogWrite(motorPinRB, reqSpeedR);
+
+
+  monitorOutput();
+  delay(500);
+}
+
+// Function to initialize motor speed
+void initialMotor() {
+  analogWrite(motorPinLA, reqSpeedL);
+  analogWrite(motorPinLB, reqSpeedL);
+  analogWrite(motorPinRA, reqSpeedR);
+  analogWrite(motorPinRB, reqSpeedR);
+}
+
+// Function to set up pin modes
+void pinSetup() {
+  // Ultrasound
+  pinMode(echoPinR, INPUT);
+  pinMode(trigPinR, OUTPUT);
+  pinMode(echoPinF, INPUT);
+  pinMode(trigPinF, OUTPUT);
+  pinMode(echoPinL, INPUT);
+  pinMode(trigPinL, OUTPUT);
+
+  // Motors
+  pinMode(motorPinLA, OUTPUT);
+  pinMode(motorPinLB, OUTPUT);
+  pinMode(motorPinRA, OUTPUT);
+  pinMode(motorPinRB, OUTPUT);
+
+  // Misc
+  pinMode(ledPin, OUTPUT);
+}
+
+// Function to handle emergency stop
+void handleEmergencyStop() {
+  if (digitalRead(buttonPin) == HIGH) {
+    // Emergency stop! Stop the motors
+    analogWrite(motorPinLA, emStop);
+    analogWrite(motorPinLB, emStop);
+    analogWrite(motorPinRA, emStop);
+    analogWrite(motorPinRB, emStop);
+
+    // Update the bumper contact value
+    strBC = 66;
+
+    // Add any other emergency stop actions here
+
+    // Set the flag to indicate emergency stop
+    emergencyStopFlag = true;
+
+    Serial.println("Emergency stop! Program will exit loop.");
+  }
+}
+
+// Function to perform ultrasound measurements
+void ultrasound() {
+  // Left Ultrasound
+  digitalWrite(trigPinL, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPinL, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPinL, LOW);
+  durL = pulseIn(echoPinL, HIGH);
+
+  // Front Ultrasound
+  digitalWrite(trigPinF, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPinF, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPinF, LOW);
+  durF = pulseIn(echoPinF, HIGH);
+
+  // Right Ultrasound
+  digitalWrite(trigPinR, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPinR, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPinR, LOW);
+  durR = pulseIn(echoPinR, HIGH);
+}
+
+
+// Function to request compass reading from slave
+void requestCompassReading() {
+  // Request compass reading from slave
+  Wire.requestFrom(slaveAddr, 4); // Request 4 bytes of data
+
+  // Check if data is available to read
+  if (Wire.available() >= 4) {
+    // Read magnetometer values from the slave Arduino
+    int magX_B1 = Wire.read();
+    int magX_B2 = Wire.read();
+    int magY_B1 = Wire.read();
+    int magY_B2 = Wire.read();
+
+    // Combine the two bytes to get the magnetometer readings
+    int magX = (magX_B1 << 8) | magX_B2;
+    int magY = (magY_B1 << 8) | magY_B2;
+
+    // Calculate the heading in degrees (0 to 360)
+    float hdg = atan2(magY - Y_OFFSET, magX - X_OFFSET) * 180.0 / PI;
+    if (hdg < 0) {
+      hdg += 360.0;
+    }
+
+    // Print the calculated heading
+    Serial.print("Heading: ");
+    Serial.println(hdg);
+
+    // Assign values to global variables
+    X_Mag = magX;
+    Y_Mag = magY;
+  }
+}
+
+// Function to map sensor values to strings
+void stringMap() {
+  // Mapping the strings outputted from sensors
+  strUL = map(durL, 131, 19533, 65, 90);
+  strUF = map(durF, 131, 19533, 65, 90);
+  strUR = map(durR, 131, 19533, 65, 90);
+
+  // Read magnetometer values and calculate heading
+  requestCompassReading();
+  float hdg = atan2(Y_Mag - Y_OFFSET, X_Mag - X_OFFSET) * 180.0 / PI;
+  if (hdg < 0) {
+    hdg += 360.0;
+  }
+
+  // Map heading value to the range 65-90
+  strBG = mapMagReading(hdg);
+}
+
+// Function to map magnetometer reading to the range 65-90
+int mapMagReading(float hdg) {
+  return map(hdg, 0, 360, 65, 90);
+}
+
+// Function to write ASCII values
+void asciiWrite() {
+  // Putting the string values together
+  Serial.write(strUL);
+  Serial.write(strUF);
+  Serial.write(strUR);
+  Serial.write(strBG);
+  Serial.write(strBC);
+
+  // Separating the strings
+  Serial.println(" ");
+}
+
+// Function to monitor output
+void monitorOutput() {
+  // Diagnostics for Ultrasound
+  Serial.print("Left : Front : Right - Distance ");
+  Serial.print(durL);
+  Serial.print(", ");
+  Serial.print(durF);
+  Serial.print(", ");
+  Serial.print(durR);
+  Serial.println(" ");
+
+  // Diagnostics for Motor
+  Serial.print("Left | Right - Motorspeed: ");
+  Serial.print(reqSpeedL);
+  Serial.print(", ");
+  Serial.print(reqSpeedR);
+  Serial.println(" ");
+}
+
+// Function for left motor control
+void leftMotorControl() {
+  if (durL < 12000) {
+    reqSpeedL = map(durL, 0, 12000, 125, 0);
+    reqSpeedL = constrain(reqSpeedL, 0, 125);
+  } else {
+    reqSpeedL = 125;
+  }
+
+  // Additional logic for special cases
+  if (durL < 2000 && durR < 2000 && durF > 12000) {
+    reqSpeedL = 50;
+  }
+
+  if (durF < 2000) {
+    reqSpeedL = 25;
+  }
+
+  if (durL > 6000 && durR > 6000) {
+    reqSpeedL = 140;
+  }
+}
+
+// Function for right motor control
+void rightMotorControl() {
+  if (durR < 12000) {
+    reqSpeedR = map(durR, 0, 12000, 125, 0);
+    reqSpeedR = constrain(reqSpeedR, 0, 125);
+  } else {
+    reqSpeedR = 125;
+  }
+
+  // Additional logic for special cases
+  if (durL < 2000 && durR < 2000 && durF > 12000) {
+    reqSpeedR = 50;
+  }
+
+  if (durF < 2000) {
+    reqSpeedR = 25;
+  }
+
+  if (durL > 6000 && durR > 6000) {
+    reqSpeedR = 140;
+  }
+}
+
